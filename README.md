@@ -96,12 +96,6 @@ Example usage:
 
 You might have to give the executable permissions to run on Linux and macOS using `chmod +x GoogleTakeoutFixer` before you can run it through the terminal.
 
-## Planned Features
-- Better looking and more user-friendly GUI
-- The ability to apply different settings to different albums or folders
-- A simple website for users who are not familiar with Github
-- Pull request and issue template
-
 ## Credits
 This project modifies metadata using the [ExifTool](https://exiftool.org/) library by **Phil Harvey**. ExifTool is licensed under the Perl Artistic license, or the GNU General Public License (see [here](https://exiftool.org/#license) for more details).
 
