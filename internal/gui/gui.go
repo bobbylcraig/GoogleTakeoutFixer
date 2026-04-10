@@ -21,12 +21,14 @@ package gui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -323,8 +325,12 @@ func Main() {
 
 	StartCancelRow := container.NewGridWithColumns(2, startButton, cancelButton)
 
-	FolderSeperator := container.NewPadded(widget.NewSeparator())
-	OptionsSeparator := container.NewPadded(widget.NewSeparator())
+	separator := canvas.NewRectangle(color.RGBA{R: 60, G: 60, B: 60, A: 100})
+	separator.SetMinSize(fyne.NewSize(1, 1))
+
+	FolderSeperator := container.NewPadded(separator)
+	OptionsSeparator := container.NewPadded(separator)
+
 
 	topContent := container.NewVBox(
 		folderButtons,
@@ -336,14 +342,18 @@ func Main() {
 		progressLabel,
 	)
 
-	w.SetContent(container.NewBorder(
+  mainContent := container.NewBorder(
 		topContent,
 		nil,
 		nil,
 		nil,
 		//logEntry, // expand
 		logEntry, // expand
-	))
+	)
+
+	paddingMainContainer := container.NewPadded(mainContent)
+
+	w.SetContent(paddingMainContainer)
 
 	w.ShowAndRun()
 }
