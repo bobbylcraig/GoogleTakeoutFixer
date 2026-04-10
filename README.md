@@ -96,6 +96,21 @@ Example usage:
 
 You might have to give the executable permissions to run on Linux and macOS using `chmod +x GoogleTakeoutFixer` before you can run it through the terminal.
 
+## Development
+### Setup
+This project uses [Go](https://go.dev/) as the programming language and [Fyne](https://fyne.io/) as the GUI framework. To run this programm in a developement enviroment, `cd` into the `cmd` directory and run `go run .` to start the program. 
+To run the GUI, make sure you have the necessary dependencies for Fyne installed. See the [Fyne Prerequisites](https://docs.fyne.io/started/quick/#prerequisites).
+
+```
+# Clone this repo
+git clone https://github.com/feloex/GoogleTakeoutFixer.git
+cd GoogleTakeoutFixer
+
+# cd into the entrypoint directory and run the main.go file
+cd cmd
+go run .
+```
+
 ## Credits
 This project modifies metadata using the [ExifTool](https://exiftool.org/) library by **Phil Harvey**. ExifTool is licensed under the Perl Artistic license, or the GNU General Public License (see [here](https://exiftool.org/#license) for more details).
 

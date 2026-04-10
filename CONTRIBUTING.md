@@ -25,20 +25,7 @@ A good bug report includes the following information:
 
 ## Pull requests
 ### Before submitting a pull request
-Before submitting a pull request, please check the [issue tracker](https://github.com/feloex/GoogleTakeoutFixer/issues) to see if there are any existing issues that your pull request addresses. If not, you can create a new issue to discuss your proposed changes before submitting a pull request. This can help ensure that your changes are wanted and that they align with the project's goals.
-
-### Setup
-This project uses [Go](https://go.dev/) as the programming language and [Fyne](https://fyne.io/) as the GUI framework. To run this programm in a developement enviroment, `cd` into the `cmd` directory and run `go run .` to start the program.
-
-```
-# Clone this repo
-git clone https://github.com/feloex/GoogleTakeoutFixer.git
-cd GoogleTakeoutFixer
-
-# cd into the entrypoint directory and run the main.go file
-cd cmd
-go run .
-```
+Before submitting a pull request, please check the [issue tracker](https://github.com/feloex/GoogleTakeoutFixer/issues) to see if there are any existing issues that your pull request addresses. If not, you can create a new issue to discuss your proposed changes before submitting a pull request. This can help ensure that your changes are wanted and that they align with the project's goals. You don't have to create an issue for small changes (e.g. fixing typos) but for larger changes (e.g. adding a new feature), please create an issue first. Not creating an issue for larger changes can lead to your pull request being closed without merging.
 
 ### Process
 1. Fork the repository
@@ -48,6 +35,7 @@ go run .
 5. Commit your changes with a clear commit message following the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format
 6. Create a pull request with a clear description of what you have done and why
 
+Also please link relevant issues in your pull request description (e.g. "Closes #123").
 
 ## AI usage
 AI tools (Claude etc.) may be used to **assist** with contributing, but:
