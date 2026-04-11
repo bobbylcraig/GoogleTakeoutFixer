@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,25 +82,14 @@ func ClearCacheDir(dir string) {
 }
 
 // All media extension to differ between media files and other files
-var imageExtensions = map[string]struct{}{
-	".jpg":  {},
-	".jpeg": {},
-	".png":  {},
-	".heic": {},
-}
+var imageExtensions = []string{".jpg", ".jpeg", ".png", ".heic"}
 
-var videoExtensions = map[string]struct{}{
-	".mp4": {},
-	".mov": {},
-	".avi": {},
-	".mkv": {},
-}
+var videoExtensions = []string{".mp4", ".mov", ".avi", ".mkv"}
 
 // Checks whether a file is a video file based on its extension
 func IsVideoFile(path string) bool {
 	extension := filepath.Ext(path)
-	_, ok := videoExtensions[strings.ToLower(extension)]
-	return ok
+	return slices.Contains(videoExtensions, strings.ToLower(extension))
 }
 
 // Duplicate a file from one path to another
@@ -209,8 +199,8 @@ func IsYearFolder(dirPath string) (bool, error) {
 // Checks whether a file, that is provided using its path, is a media file
 func IsMediaFile(path string) bool {
 	extension := strings.ToLower(filepath.Ext(path))
-	_, isImage := imageExtensions[extension]
-	_, isVideo := videoExtensions[extension]
+	isImage := slices.Contains(imageExtensions, extension)
+	isVideo := slices.Contains(videoExtensions, extension)
 	return isImage || isVideo
 }
 
@@ -227,7 +217,7 @@ func FindImagePartner(videoPath string) (string, error) {
 	base := strings.TrimSuffix(filepath.Base(videoPath), extension)
 
 	// Check all image extensions for a match
-	for imgExt := range imageExtensions {
+	for _, imgExt := range imageExtensions {
 		candidate := filepath.Join(dir, base+imgExt)
 
 		if _, err := os.Stat(candidate); err == nil {
