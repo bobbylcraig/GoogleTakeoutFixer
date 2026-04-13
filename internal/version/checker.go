@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +47,8 @@ func CheckForUpdates() (VersionInfo, error) {
 	if err != nil {
 		return VersionInfo{}, err
 	}
+	// Close the respone body when done
+	defer latest.Body.Close()
 
 	var latestVersion VersionInfo
 
@@ -71,18 +74,23 @@ func CheckForUpdates() (VersionInfo, error) {
 func isNewerVersion(current, latest string) bool {
 
 	// Remove 'v' prefix if present
-	strings.TrimPrefix(current, "v")
-	strings.TrimPrefix(latest, "v")
+	current = strings.TrimPrefix(current, "v")
+	latest = strings.TrimPrefix(latest, "v")
 
 	currentParts := strings.Split(current, ".")
 	latestParts := strings.Split(latest, ".")
 
 	// versions *should* have 3 parts
-
 	for i := 0; i < len(currentParts) && i < len(latestParts); i++ {
-		if currentParts[i] < latestParts[i] {
+		currentNum, err1 := strconv.Atoi(currentParts[i])
+		latestNum, err2 := strconv.Atoi(latestParts[i])
+		if err1 != nil || err2 != nil {
+			return false
+		}
+
+		if currentNum < latestNum {
 			return true
-		} else if currentParts[i] > latestParts[i] {
+		} else if currentNum > latestNum {
 			return false
 		}
 	}
