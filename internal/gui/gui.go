@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -58,6 +59,32 @@ func Main() {
 	progressBar := widget.NewProgressBar()
 	var cancelFn context.CancelFunc
 	var cancelButton *widget.Button
+
+	// Update checker
+	go func() {
+		latestVersion, err := version.CheckForUpdates()
+		if err != nil {
+			return
+		}
+		url, err := url.Parse(latestVersion.DownloadURL)
+		if err != nil {
+			return
+		}
+		fyne.Do(func() {
+
+			updateMsg := fmt.Sprintf("New version available: %s", latestVersion.Version)
+			updateLink := widget.NewHyperlink(updateMsg, url)
+			updateLink.Alignment = fyne.TextAlignCenter
+			updateLink.TextStyle = fyne.TextStyle{Bold: true}
+
+			updateLink.Refresh()
+
+			w.SetContent(container.NewVBox(
+				updateLink,
+				w.Content(),
+			))
+		})
+	}()
 
 	// Button for opening file dialog for choosing google takeout path and output path
 	var inputButton *widget.Button
@@ -331,7 +358,6 @@ func Main() {
 	FolderSeperator := container.NewPadded(separator)
 	OptionsSeparator := container.NewPadded(separator)
 
-
 	topContent := container.NewVBox(
 		folderButtons,
 		FolderSeperator,
@@ -342,7 +368,7 @@ func Main() {
 		progressLabel,
 	)
 
-  mainContent := container.NewBorder(
+	mainContent := container.NewBorder(
 		topContent,
 		nil,
 		nil,
