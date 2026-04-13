@@ -72,7 +72,7 @@ func Main() {
 		}
 		fyne.Do(func() {
 
-			updateMsg := fmt.Sprintf("New version available: %s", latestVersion.Version)
+			updateMsg := fmt.Sprintf("Download new version: %s", latestVersion.Version)
 			updateLink := widget.NewHyperlink(updateMsg, url)
 			updateLink.Alignment = fyne.TextAlignCenter
 			updateLink.TextStyle = fyne.TextStyle{Bold: true}
