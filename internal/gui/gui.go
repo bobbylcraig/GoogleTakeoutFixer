@@ -79,8 +79,12 @@ func Main() {
 
 			updateLink.Refresh()
 
-			w.SetContent(container.NewVBox(
+			// Keep the main content in the center so it resizes properly
+			w.SetContent(container.NewBorder(
 				updateLink,
+				nil,
+				nil,
+				nil,
 				w.Content(),
 			))
 		})
