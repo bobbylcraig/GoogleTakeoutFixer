@@ -39,12 +39,12 @@ jobs:
 
       - name: Install Windows x64 deps
         if: matrix.name == 'Windows_x64'
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 zip
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 zip p7zip-full
 
       - name: Install Windows arm64 deps
         if: matrix.name == 'Windows_arm64'
         run: |
-          sudo apt-get update && sudo apt-get install -y zip
+          sudo apt-get update && sudo apt-get install -y zip p7zip-full
           URL=$(curl -fsSL https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest | \
             jq -r '.assets[] | select(.name | test("ucrt-ubuntu.*x86_64\\.tar\\.xz$")) | .browser_download_url')
           FILENAME=$(basename "$URL")
@@ -87,6 +87,38 @@ jobs:
 
           cp LICENSE "${OUT}/LICENSE.txt"
           [ -f README.md ] && cp README.md "${OUT}/README.md"
+          
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            if [ "${{ matrix.goarch }}" = "amd64" ]; then
+              curl -fsSL -L -o mesa.7z "https://downloads.fdossena.com/geth.php?r=mesa64-latest"
+              7z e mesa.7z opengl32.dll -o"${OUT}" || true
+              rm -f mesa.7z
+              cat > "${OUT}/MESA-LICENSE.txt" <<'EOF'
+          Mesa 3-D graphics library
+
+          Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
+          Copyright (C) 2008  VMware, Inc.  All Rights Reserved.
+
+          Permission is hereby granted, free of charge, to any person obtaining a
+          copy of this software and associated documentation files (the "Software"),
+          to deal in the Software without restriction, including without limitation
+          the rights to use, copy, modify, merge, publish, distribute, sublicense,
+          and/or sell copies of the Software, and to permit persons to whom the
+          Software is furnished to do so, subject to the following conditions:
+          
+          The above copyright notice and this permission notice shall be included
+          in all copies or substantial portions of the Software.
+          
+          THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+          OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+          FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+          THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+          OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+          ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+          OTHER DEALINGS IN THE SOFTWARE.
+          EOF
+            fi
+          fi
 
           if [ "${{ matrix.archive }}" = "zip" ]; then
             zip -r "${OUT}.zip" "${OUT}"

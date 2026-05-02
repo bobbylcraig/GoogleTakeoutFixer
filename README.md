@@ -111,8 +111,14 @@ cd cmd
 go run .
 ```
 
-## Credits
+## License
+GoogleTakeoutFixer itself is licensed under GNU General Public License v3. See [LICENSE](LICENSE) for more details.
+
+Used libaries may use different licenses.
+
 This project modifies metadata using the [ExifTool](https://exiftool.org/) library by **Phil Harvey**. ExifTool is licensed under the Perl Artistic license, or the GNU General Public License (see [here](https://exiftool.org/#license) for more details).
+
+AMD64 Windows users are provided with a copy of the library "Mesa3D" (`opengl32.dll`). This is mostly licensed under the MIT License, but some files may be licensed under different licenses. See [here](https://docs.mesa3d.org/license.html) for more details. A copy of the MIT license may be obtained [here](https://opensource.org/license/mit/). It is also provided as `MESA-LICENSE.txt` in the corresponding release assets.
 
 ## Donate
 This software is completely free. You are free to use, modify, and distribute it. If you'd like to support my work, you can donate via my monero adress. Remember that donating is completely optional.
