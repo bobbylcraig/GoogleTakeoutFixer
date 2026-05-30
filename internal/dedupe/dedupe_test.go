@@ -405,3 +405,41 @@ func TestFindGroups_DualHashGate(t *testing.T) {
 		}
 	})
 }
+
+// TestKeepCandidate verifies the auto-delete keep policy: the shortest path is
+// kept, ties broken alphabetically, and every other member is returned to trash.
+func TestKeepCandidate(t *testing.T) {
+	t.Run("keeps shortest path", func(t *testing.T) {
+		g := Group{Kind: MatchExact, Files: []PhotoInfo{
+			{Path: "/photos/albums/Trip/IMG_0001.jpg"},
+			{Path: "/photos/2020/IMG_0001.jpg"}, // shortest -> keep
+			{Path: "/photos/albums/Other/IMG_0001.jpg"},
+		}}
+		keep, trash := KeepCandidate(g)
+		if keep.Path != "/photos/2020/IMG_0001.jpg" {
+			t.Fatalf("kept %q, want the shortest path", keep.Path)
+		}
+		if len(trash) != 2 {
+			t.Fatalf("expected 2 files to trash, got %d", len(trash))
+		}
+		for _, f := range trash {
+			if f.Path == keep.Path {
+				t.Fatalf("kept file %q also appears in trash list", keep.Path)
+			}
+		}
+	})
+
+	t.Run("breaks equal-length ties alphabetically", func(t *testing.T) {
+		g := Group{Kind: MatchExact, Files: []PhotoInfo{
+			{Path: "/p/b.jpg"},
+			{Path: "/p/a.jpg"}, // same length, alphabetically first -> keep
+		}}
+		keep, trash := KeepCandidate(g)
+		if keep.Path != "/p/a.jpg" {
+			t.Fatalf("kept %q, want /p/a.jpg", keep.Path)
+		}
+		if len(trash) != 1 || trash[0].Path != "/p/b.jpg" {
+			t.Fatalf("expected to trash /p/b.jpg, got %v", trash)
+		}
+	})
+}

@@ -166,6 +166,37 @@ func sortByPath(p []PhotoInfo) {
 	sort.Slice(p, func(i, j int) bool { return p[i].Path < p[j].Path })
 }
 
+// KeepCandidate returns the member of an exact-byte group to keep when
+// auto-collapsing duplicates: the one with the shortest path, ties broken
+// alphabetically. Shortest path favors the canonical "Photos from <year>"
+// copy over a nested album copy. The remaining members are the ones to trash.
+//
+// It panics on an empty group — callers only invoke it for groups of 2+.
+func KeepCandidate(g Group) (keep PhotoInfo, trash []PhotoInfo) {
+	best := 0
+	for i := 1; i < len(g.Files); i++ {
+		if preferKeep(g.Files[i].Path, g.Files[best].Path) {
+			best = i
+		}
+	}
+	keep = g.Files[best]
+	for i, f := range g.Files {
+		if i != best {
+			trash = append(trash, f)
+		}
+	}
+	return keep, trash
+}
+
+// preferKeep reports whether path a is a better keep than path b: shorter
+// first, then alphabetically lower as a deterministic tiebreak.
+func preferKeep(a, b string) bool {
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	return a < b
+}
+
 // unionFind is a minimal disjoint-set structure for clustering.
 type unionFind struct {
 	parent []int

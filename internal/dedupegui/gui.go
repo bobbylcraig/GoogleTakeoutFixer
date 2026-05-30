@@ -90,6 +90,9 @@ func (r *reviewer) buildStartView() fyne.CanvasObject {
 	sensSelect := widget.NewSelect(names, nil)
 	sensSelect.SetSelectedIndex(1) // Near-duplicate by default
 
+	autoExactCheck := widget.NewCheck(
+		"Auto-delete byte-identical duplicates without asking", nil)
+
 	folderLabel := widget.NewLabel("No folder selected")
 	folderLabel.Truncation = fyne.TextTruncateEllipsis
 
@@ -107,7 +110,7 @@ func (r *reviewer) buildStartView() fyne.CanvasObject {
 			dialog.ShowInformation("Select a folder", "Please choose a folder to scan first.", r.win)
 			return
 		}
-		r.runScan(folder, presets[sensSelect.SelectedIndex()])
+		r.runScan(folder, presets[sensSelect.SelectedIndex()], autoExactCheck.Checked)
 	})
 	scanBtn.Importance = widget.HighImportance
 
@@ -122,6 +125,7 @@ func (r *reviewer) buildStartView() fyne.CanvasObject {
 		folderLabel,
 		widget.NewLabel("Sensitivity:"),
 		sensSelect,
+		autoExactCheck,
 		scanBtn,
 		widget.NewSeparator(),
 		note,
@@ -131,7 +135,7 @@ func (r *reviewer) buildStartView() fyne.CanvasObject {
 
 // runScan scans in the background and shows progress, then switches to the
 // reviewer (or an "all clear" message).
-func (r *reviewer) runScan(folder string, sens dedupe.Sensitivity) {
+func (r *reviewer) runScan(folder string, sens dedupe.Sensitivity, autoExact bool) {
 	progress := widget.NewProgressBar()
 	status := widget.NewLabel("Scanning…")
 	status.Truncation = fyne.TextTruncateEllipsis
@@ -168,21 +172,66 @@ func (r *reviewer) runScan(folder string, sens dedupe.Sensitivity) {
 			return
 		}
 
+		// Optionally collapse byte-identical groups without prompting. This
+		// runs here, off the UI thread, because each Move touches the disk.
+		// Exact groups that are fully handled are dropped from review.
+		autoDeleted := 0
+		if autoExact {
+			groups, autoDeleted, err = autoCollapseExact(groups, trash)
+			if err != nil {
+				fyne.Do(func() { dialog.ShowError(err, r.win) })
+				return
+			}
+		}
+
 		fyne.Do(func() {
 			r.trash = trash
 			r.pairs = pairsFromGroups(groups)
 			r.trashed = make(map[string]bool)
 			r.current = 0
 			if len(r.pairs) == 0 {
-				dialog.ShowInformation("No duplicates found",
-					"No duplicate or similar photos matched the chosen sensitivity.", r.win)
+				msg := "No duplicate or similar photos matched the chosen sensitivity."
+				if autoDeleted > 0 {
+					msg = fmt.Sprintf(
+						"%d byte-identical duplicate(s) were moved to:\n%s\n\nNo further matches need review.",
+						autoDeleted, trash.Dir())
+				}
+				dialog.ShowInformation("Nothing left to review", msg, r.win)
 				r.win.SetContent(r.buildStartView())
 				return
+			}
+			if autoDeleted > 0 {
+				dialog.ShowInformation("Exact duplicates removed",
+					fmt.Sprintf("%d byte-identical duplicate(s) were moved to the trash folder. Review the remaining matches below.",
+						autoDeleted), r.win)
 			}
 			r.win.SetContent(r.buildReviewView())
 			r.showPair()
 		})
 	}()
+}
+
+// autoCollapseExact trashes all-but-one of every byte-identical (MatchExact)
+// group, keeping the shortest-path copy, and returns the groups that still need
+// human review (perceptual matches, plus any exact group a trash error left
+// only partially handled) along with the number of files moved.
+func autoCollapseExact(groups []dedupe.Group, trash *dedupe.Trash) ([]dedupe.Group, int, error) {
+	var remaining []dedupe.Group
+	deleted := 0
+	for _, g := range groups {
+		if g.Kind != dedupe.MatchExact || len(g.Files) < 2 {
+			remaining = append(remaining, g)
+			continue
+		}
+		_, toTrash := dedupe.KeepCandidate(g)
+		for _, f := range toTrash {
+			if _, err := trash.Move(f.Path); err != nil {
+				return nil, deleted, fmt.Errorf("auto-deleting %s: %w", filepath.Base(f.Path), err)
+			}
+			deleted++
+		}
+	}
+	return remaining, deleted, nil
 }
 
 // pairsFromGroups flattens groups into reviewable left/right pairs.

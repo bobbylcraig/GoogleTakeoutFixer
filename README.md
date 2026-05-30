@@ -70,7 +70,7 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
     - **"Create month subfolders"**: Creates month subfolders (labeled 1-12) inside of the output folders.
     - **"Flatten output structure"**: Puts all files directly in the output folder.
     - **"Restore .MOV file extension"**: Restores .MOV file extension in case the Major Brand EXIF field says "Apple QuickTime (.MOV/QT)" (See #2).
-    - **"Merge Live Photos"**: Rejoins iPhone Live Photos that Takeout split into a separate still (HEIC/JPEG) and video (MOV/MP4) sharing the same name. Each pair is merged back into a single [Google Motion Photo](https://developer.android.com/media/platform/motion-photo-format) so Google Photos plays it as a Live Photo on re-upload. Cannot be combined with symlinked albums (merging rewrites the still in place).
+    - **"Merge Live Photos"**: Rejoins iPhone Live Photos that Takeout split into a separate still (HEIC/JPEG) and video (MOV/MP4) sharing the same name. Each pair is merged back into a single [Google Motion Photo](https://developer.android.com/media/platform/motion-photo-format) so Google Photos plays it as a Live Photo on re-upload. The still's real format is detected from its contents, not its extension — Takeout sometimes returns a JPEG carrying a `.HEIC` name, and such a file is renamed to its true extension (e.g. `.jpg`) as part of merging so the metadata can be written correctly. Cannot be combined with symlinked albums (merging rewrites the still in place).
 5. Click **"Start processing"** and wait for the process to finish. The time it takes depends on the number of photos and videos you have.
 
 Once the process is complete, you can find your fixed files in the output folder you selected.
@@ -109,10 +109,15 @@ GoogleTakeoutFixer ships with a separate **Duplicate Finder** tool that scans a 
 
 How it works:
 1. Choose a folder to scan and a **sensitivity** preset (Identical, Near-duplicate, or Similar / possible edits).
-2. The tool presents each match as a side-by-side pair, with each photo's file size, dimensions, date taken, GPS location, and people tags shown beneath it.
-3. For each pair you can **Delete left**, **Delete right**, **Delete both**, or **Keep both**.
+2. Optionally tick **"Auto-delete byte-identical duplicates without asking"** (see below).
+3. The tool presents each match as a side-by-side pair, with each photo's file size, dimensions, date taken, GPS location, and people tags shown beneath it.
+4. For each pair you can **Delete left**, **Delete right**, **Delete both**, or **Keep both**.
 
-Deletions are never permanent: matched files are **moved to a `GTF-duplicates-trash` folder** inside the scanned directory, and a `restore-manifest.json` records where each file came from so you can put it back. Because perceptual matching can occasionally over-group low-detail images (skies, blank walls), review each pair before deleting.
+Matching combines two perceptual fingerprints — structure (dHash) and brightness profile (aHash) — and only groups photos when **both** agree. Requiring agreement curbs the tendency to over-group low-detail images (skies, blank walls) that look alike structurally but differ in brightness.
+
+**Auto-delete byte-identical duplicates:** when this option is enabled, the finder skips the review step for files that are *exactly* identical (same bytes, and therefore identical metadata) — for example the same photo copied into both a "Photos from (year)" folder and an album. For each such set it keeps one copy (the one with the shortest path, which is usually the year-folder copy) and trashes the rest automatically. Only byte-identical files are auto-handled; near-duplicates and edits are always shown for manual review. Left off, every match is reviewed by hand.
+
+Deletions are never permanent: matched files (whether removed manually or auto-deleted) are **moved to a `GTF-duplicates-trash` folder** inside the scanned directory, and a `restore-manifest.json` records where each file came from so you can put it back. Because perceptual matching can occasionally over-group low-detail images (skies, blank walls), review each pair before deleting.
 
 > [!NOTE]
 > People and location metadata are read using ExifTool. If ExifTool is not installed/bundled, the finder still works but shows only file size and dimensions.

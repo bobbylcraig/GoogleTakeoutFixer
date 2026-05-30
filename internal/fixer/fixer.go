@@ -500,15 +500,15 @@ func ProcessLivePhotoPair(
 	if fixerCtx.Options.MergeLivePhotos && !skipImage && !skipVideo {
 		if !IsMotionPhotoStill(imageDest) {
 			Log(LoggerInfo, "Live Photo still %s is not a muxable format; leaving pair as separate files", imageName)
-		} else if err := MuxMotionPhoto(imageDest, videoDest); err != nil {
+		} else if mergedPath, err := MuxMotionPhoto(imageDest, videoDest); err != nil {
 			// Leave both files in place on failure — they are still correct,
 			// just not merged.
 			Log(LoggerWarn, "Could not merge Live Photo %s into a Motion Photo: %v", imageName, err)
 		} else if err := os.Remove(videoDest); err != nil {
 			Log(LoggerWarn, "Merged Motion Photo %s but could not remove standalone video %s: %v",
-				filepath.Base(imageDest), filepath.Base(videoDest), err)
+				filepath.Base(mergedPath), filepath.Base(videoDest), err)
 		} else {
-			Log(LoggerInfo, "Merged Live Photo %s into a Motion Photo", filepath.Base(imageDest))
+			Log(LoggerInfo, "Merged Live Photo %s into a Motion Photo", filepath.Base(mergedPath))
 		}
 	}
 
