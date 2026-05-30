@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 package fixer
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -82,9 +83,9 @@ func ClearCacheDir(dir string) {
 }
 
 // All media extension to differ between media files and other files
-var imageExtensions = []string{".jpg", ".jpeg", ".png", ".heic"}
+var imageExtensions = []string{".jpg", ".jpeg", ".png", ".heic", ".gif", ".webp", ".tiff", ".tif", ".bmp"}
 
-var videoExtensions = []string{".mp4", ".mov", ".avi", ".mkv"}
+var videoExtensions = []string{".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp"}
 
 // Checks whether a file is a video file based on its extension
 func IsVideoFile(path string) bool {
@@ -92,7 +93,158 @@ func IsVideoFile(path string) bool {
 	return slices.Contains(videoExtensions, strings.ToLower(extension))
 }
 
-// Duplicate a file from one path to another
+// hashFile returns the SHA-256 of a file's contents.
+func hashFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
+}
+
+// sameContent reports whether two files have identical contents.
+// It short-circuits on differing size before hashing.
+func sameContent(a, b string) (bool, error) {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false, err
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false, err
+	}
+	if ai.Size() != bi.Size() {
+		return false, nil
+	}
+
+	ah, err := hashFile(a)
+	if err != nil {
+		return false, err
+	}
+	bh, err := hashFile(b)
+	if err != nil {
+		return false, err
+	}
+	return string(ah) == string(bh), nil
+}
+
+// ResolveDestPath decides where a source file should be written given that
+// destPath may already be taken. It returns:
+//   - skip=true when an existing file at destPath (or one of its numbered
+//     variants) is byte-identical to the source, meaning nothing needs writing.
+//   - otherwise the first available path, appending " (n)" before the
+//     extension so distinct files sharing a name are kept side by side.
+func ResolveDestPath(sourcePath, destPath string) (resolved string, skip bool, err error) {
+	ext := filepath.Ext(destPath)
+	base := strings.TrimSuffix(destPath, ext)
+
+	for n := 0; ; n++ {
+		candidate := destPath
+		if n > 0 {
+			candidate = fmt.Sprintf("%s (%d)%s", base, n, ext)
+		}
+
+		info, statErr := os.Stat(candidate)
+		if os.IsNotExist(statErr) {
+			return candidate, false, nil
+		}
+		if statErr != nil {
+			return "", false, statErr
+		}
+		if info.IsDir() {
+			continue
+		}
+
+		identical, err := sameContent(sourcePath, candidate)
+		if err != nil {
+			return "", false, err
+		}
+		if identical {
+			return candidate, true, nil
+		}
+	}
+}
+
+// ResolvePairDestPaths resolves output paths for a Live Photo pair so both
+// halves receive the *same* " (n)" suffix, keeping their base names matched.
+//
+// It scans for the lowest n (starting at 0 = no suffix) where neither the image
+// nor the video destination collides with a *different* file. A slot is usable
+// when each side is either free or byte-identical to its source. The returned
+// skips report whether each side is already present byte-identically (so it
+// need not be rewritten); when both are skipped the caller can skip the pair.
+func ResolvePairDestPaths(imageSrc, videoSrc, imageDest, videoDest string) (
+	imageOut, videoOut string, skipImage, skipVideo bool, err error,
+) {
+	imgExt := filepath.Ext(imageDest)
+	imgBase := strings.TrimSuffix(imageDest, imgExt)
+	vidExt := filepath.Ext(videoDest)
+	vidBase := strings.TrimSuffix(videoDest, vidExt)
+
+	for n := 0; ; n++ {
+		imgCand, vidCand := imageDest, videoDest
+		if n > 0 {
+			imgCand = fmt.Sprintf("%s (%d)%s", imgBase, n, imgExt)
+			vidCand = fmt.Sprintf("%s (%d)%s", vidBase, n, vidExt)
+		}
+
+		imgState, err := slotState(imageSrc, imgCand)
+		if err != nil {
+			return "", "", false, false, err
+		}
+		vidState, err := slotState(videoSrc, vidCand)
+		if err != nil {
+			return "", "", false, false, err
+		}
+
+		// Both names must be usable at this same n for the pair to stay linked.
+		if imgState == slotTaken || vidState == slotTaken {
+			continue
+		}
+		return imgCand, vidCand, imgState == slotIdentical, vidState == slotIdentical, nil
+	}
+}
+
+type slotResult int
+
+const (
+	slotFree      slotResult = iota // nothing at this path
+	slotIdentical                   // a byte-identical copy already exists
+	slotTaken                       // a different file occupies this path
+)
+
+// slotState classifies whether dest is free, already holds the same bytes as
+// src, or is occupied by a different file. Directories count as taken.
+func slotState(src, dest string) (slotResult, error) {
+	info, statErr := os.Stat(dest)
+	if os.IsNotExist(statErr) {
+		return slotFree, nil
+	}
+	if statErr != nil {
+		return slotFree, statErr
+	}
+	if info.IsDir() {
+		return slotTaken, nil
+	}
+	identical, err := sameContent(src, dest)
+	if err != nil {
+		return slotFree, err
+	}
+	if identical {
+		return slotIdentical, nil
+	}
+	return slotTaken, nil
+}
+
+// Duplicate a file from one path to another. On copy failure the partial (or
+// reserved placeholder) output file is removed so a re-run is not misled by a
+// truncated leftover.
 func DuplicateFile(inputPath string, outputPath string) error {
 	sourceFile, err := os.Open(inputPath)
 	if err != nil {
@@ -104,10 +256,13 @@ func DuplicateFile(inputPath string, outputPath string) error {
 	if err != nil {
 		return err
 	}
-	defer destFile.Close()
 
-	_, err = io.Copy(destFile, sourceFile)
-	return err
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		destFile.Close()
+		os.Remove(outputPath)
+		return err
+	}
+	return destFile.Close()
 }
 
 // Discover directories within a path non recursively
@@ -129,27 +284,150 @@ func DiscoverDirs(path string) ([]os.DirEntry, error) {
 	return dirList, nil
 }
 
-// Find a matching sidecar JSON
+// editedSuffixes are markers Google adds to derivative files that have no
+// sidecar of their own; the sidecar belongs to the original media file.
+// Localized variants exist; these cover the common cases.
+var editedSuffixes = []string{"-edited", "-bearbeitet", "-modifié", "-ha editado", "-bewerkt", "-edytowane"}
+
+// dupNumberRe matches a Google duplicate counter like "(1)" at the end of a
+// base name, e.g. "IMG_0001(1)".
+var dupNumberRe = regexp.MustCompile(`^(.*)\((\d+)\)$`)
+
+// leadingDupRe matches a duplicate counter at the start of a string, e.g.
+// "(1).supplementary-metadata" -> captures "(1)".
+var leadingDupRe = regexp.MustCompile(`^\(\d+\)`)
+
+// stripEditedSuffix removes a trailing "-edited" style marker from a base name
+// (the part without extension). Returns the stripped base and whether one was found.
+func stripEditedSuffix(base string) (string, bool) {
+	lower := strings.ToLower(base)
+	for _, suf := range editedSuffixes {
+		if strings.HasSuffix(lower, suf) {
+			return base[:len(base)-len(suf)], true
+		}
+	}
+	return base, false
+}
+
+// sidecarCandidates returns, in priority order, the exact JSON sidecar
+// filenames Google Takeout may have used for a given media filename.
+//
+// Google's naming is irregular. For a media file "name.ext" the sidecar may be:
+//   - name.ext.supplementary-metadata.json   (current, long form)
+//   - name.ext.suppl.json / ...supplementa.json (truncated long form)
+//   - name.ext.json                           (older form)
+//   - name.json                               (oldest form)
+//
+// Duplicate counters migrate outside the extension: "name(1).ext" pairs with
+// "name.ext(1).json" (and also "name.ext.json"-style variants carrying "(n)").
+// "-edited" derivatives carry no sidecar and resolve to the original's.
+func sidecarCandidates(fileName string) []string {
+	ext := filepath.Ext(fileName)
+	base := strings.TrimSuffix(fileName, ext)
+
+	// Detect a duplicate counter on the base, e.g. IMG_0001(1) -> base IMG_0001, n "(1)".
+	dupSuffix := ""
+	if m := dupNumberRe.FindStringSubmatch(base); m != nil {
+		base = m[1]
+		dupSuffix = "(" + m[2] + ")"
+	}
+
+	// Reconstruct the "stem" Google uses as the sidecar prefix: original
+	// filename without the duplicate counter, e.g. "IMG_0001.jpg".
+	stem := base + ext
+
+	var candidates []string
+	// Long form and its variants, with the duplicate counter placed after .json's stem.
+	candidates = append(candidates,
+		stem+".supplementary-metadata"+dupSuffix+".json",
+		stem+dupSuffix+".json",
+		base+dupSuffix+".json",
+	)
+	return candidates
+}
+
+// Find a matching sidecar JSON for a media file.
 func FindSidecar(imagePath string) (string, error) {
-	// Scan directory non case sensitively for JSON sidecar files
 	dir := filepath.Dir(imagePath)
-	base := strings.TrimSuffix(filepath.Base(imagePath), filepath.Ext(imagePath))
-	prefix := strings.ToLower(base)
+	fileName := filepath.Base(imagePath)
 
 	entries, err := ReadDirCached(dir)
 	if err != nil {
 		return "", err
 	}
 
+	// Build a case-insensitive lookup of JSON files in the directory.
+	jsonByLower := make(map[string]string, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		lower := strings.ToLower(name)
-		if strings.HasPrefix(lower, prefix) && strings.HasSuffix(lower, ".json") {
-			return filepath.Join(dir, name), nil
+		if strings.HasSuffix(strings.ToLower(name), ".json") {
+			jsonByLower[strings.ToLower(name)] = name
+		}
+	}
+	if len(jsonByLower) == 0 {
+		return "", nil
+	}
+
+	// "-edited" derivatives use the original media file's sidecar, so resolve
+	// against the original name first, then fall back to the edited name.
+	namesToTry := []string{fileName}
+	if ext := filepath.Ext(fileName); ext != "" {
+		stem := strings.TrimSuffix(fileName, ext)
+		if stripped, ok := stripEditedSuffix(stem); ok {
+			namesToTry = append([]string{stripped + ext}, namesToTry...)
+		}
+	}
+
+	for _, name := range namesToTry {
+		// 1) Exact candidate matches (handles long form, truncation-free cases,
+		//    older forms, and the (n) duplicate counter).
+		for _, cand := range sidecarCandidates(name) {
+			if actual, ok := jsonByLower[strings.ToLower(cand)]; ok {
+				return filepath.Join(dir, actual), nil
+			}
+		}
+
+		// 2) Truncation fallback: Google truncates long sidecar names, so
+		//    "IMG_0001.jpg.supplementary-metadata.json" can become
+		//    "IMG_0001.jpg.supplementa.json". Match a JSON whose name starts
+		//    with the media filename (case-insensitive) and is a plausible
+		//    supplementary-metadata fragment.
+		if match := matchTruncatedSidecar(name, jsonByLower); match != "" {
+			return filepath.Join(dir, match), nil
 		}
 	}
 
 	return "", nil
+}
+
+// matchTruncatedSidecar finds a JSON whose name is a truncated
+// "<fileName>.supplementary-metadata.json". It requires the JSON to start with
+// the media filename and the remainder to be a prefix of the supplementary
+// suffix, avoiding accidental matches with unrelated files that merely share a
+// prefix (e.g. IMG_1 vs IMG_12).
+func matchTruncatedSidecar(fileName string, jsonByLower map[string]string) string {
+	lowerFile := strings.ToLower(fileName)
+	const supplement = ".supplementary-metadata"
+
+	var best string
+	for lower, actual := range jsonByLower {
+		body := strings.TrimSuffix(lower, ".json")
+		if !strings.HasPrefix(body, lowerFile) {
+			continue
+		}
+		remainder := body[len(lowerFile):]
+		// A duplicate counter "(n)" may lead the remainder before the suffix; drop it.
+		remainder = leadingDupRe.ReplaceAllString(remainder, "")
+		// Valid only if what's left is empty (".json" directly) or a (possibly
+		// truncated) leading fragment of ".supplementary-metadata".
+		if remainder == "" || strings.HasPrefix(supplement, remainder) {
+			// Prefer the longest body (closest to the real, untruncated name).
+			if len(actual) > len(best) {
+				best = actual
+			}
+		}
+	}
+	return best
 }
 
 // Checks if the file at the given path has the specified extension
@@ -232,6 +510,57 @@ func FindImagePartner(videoPath string) (string, error) {
 	}
 
 	return "", nil
+}
+
+// livePhotoImageExts are the still-image halves of an iPhone Live Photo. Older
+// devices emitted JPG, newer ones HEIC; both pair with a same-named video.
+var livePhotoImageExts = []string{".heic", ".heif", ".jpg", ".jpeg"}
+
+// livePhotoVideoExts are the motion halves of a Live Photo. iPhones use .mov;
+// some Takeout exports rename the QuickTime container to .mp4 (see issue #2).
+var livePhotoVideoExts = []string{".mov", ".mp4"}
+
+// DetectLivePhotoPairs scans one directory's entries and returns a map from an
+// image file path to its Live Photo video partner path. A pair is two files in
+// the same directory sharing a base name where one is a still image and the
+// other is a motion video (e.g. IMG_1234.HEIC + IMG_1234.MOV).
+//
+// Pairing is by base name only — that is the sole link Google Takeout leaves
+// intact after stripping Apple's ContentIdentifier. To avoid spurious matches
+// the image extension must be a Live Photo still type, not just any image.
+func DetectLivePhotoPairs(dirPath string, entries []os.DirEntry) map[string]string {
+	// Index files by lowercased base name, separating image and video halves.
+	type halves struct{ image, video string }
+	byBase := make(map[string]*halves)
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		ext := strings.ToLower(filepath.Ext(name))
+		base := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+		full := filepath.Join(dirPath, name)
+
+		h := byBase[base]
+		if h == nil {
+			h = &halves{}
+			byBase[base] = h
+		}
+		if slices.Contains(livePhotoImageExts, ext) && h.image == "" {
+			h.image = full
+		} else if slices.Contains(livePhotoVideoExts, ext) && h.video == "" {
+			h.video = full
+		}
+	}
+
+	pairs := make(map[string]string)
+	for _, h := range byBase {
+		if h.image != "" && h.video != "" {
+			pairs[h.image] = h.video
+		}
+	}
+	return pairs
 }
 
 // Counts all processable files in the source path

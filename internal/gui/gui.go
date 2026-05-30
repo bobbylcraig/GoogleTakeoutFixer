@@ -53,6 +53,7 @@ func Main() {
 	var ignoreAlbums bool = false
 	var monthSubfolders bool = false
 	var restoreMOVExtension bool = false
+	var mergeLivePhotos bool = false
 
 	progressLabel := widget.NewLabel("Ready to start")
 	progressLabel.Truncation = fyne.TextTruncateEllipsis
@@ -143,6 +144,11 @@ func Main() {
 		fmt.Println("restore MOV extension", restoreMOVExtension)
 	})
 
+	mergeLivePhotosCheckbox := widget.NewCheck("Merge Live Photos", func(value bool) {
+		mergeLivePhotos = value
+		fmt.Println("merge live photos", mergeLivePhotos)
+	})
+
 	// Fix conflicting options
 	updateCheckboxStates := func() {
 		setEnabled := func(cb *widget.Check, enabled bool) {
@@ -152,13 +158,15 @@ func Main() {
 				cb.Disable()
 			}
 		}
-		setEnabled(useLinksCheckbox, !ignoreAlbums && !flatten)
+		setEnabled(useLinksCheckbox, !ignoreAlbums && !flatten && !mergeLivePhotos)
 		setEnabled(ignoreAlbumsCheckbox, !useSymlinks && !flatten)
 		setEnabled(flattenCheckbox, !useSymlinks && !ignoreAlbums && !monthSubfolders)
 		setEnabled(monthSubfoldersCheckbox, !flatten)
+		// Merging rewrites the still in place, so it can't use symlinked albums.
+		setEnabled(mergeLivePhotosCheckbox, !useSymlinks)
 	}
 
-	for _, cb := range []*widget.Check{useLinksCheckbox, ignoreAlbumsCheckbox, flattenCheckbox, monthSubfoldersCheckbox} {
+	for _, cb := range []*widget.Check{useLinksCheckbox, ignoreAlbumsCheckbox, flattenCheckbox, monthSubfoldersCheckbox, mergeLivePhotosCheckbox} {
 		cb := cb
 		prev := cb.OnChanged
 		cb.OnChanged = func(v bool) {
@@ -187,6 +195,7 @@ func Main() {
 		monthSubfoldersCheckbox.Disable()
 		flattenCheckbox.Disable()
 		restoreMOVExtensionCheckbox.Disable()
+		mergeLivePhotosCheckbox.Disable()
 
 		fixer.Log(fixer.LoggerInfo, "Processing...")
 		progressBar.SetValue(0)
@@ -204,6 +213,7 @@ func Main() {
 			IgnoreAlbums:        ignoreAlbums,
 			MonthSubfolders:     monthSubfolders,
 			RestoreMOVExtension: restoreMOVExtension,
+			MergeLivePhotos:     mergeLivePhotos,
 		}
 		go func() {
 			if err := fixer.Process(ctx, inputPath, outputPath, progressCh, opts); err != nil {
@@ -352,6 +362,7 @@ func Main() {
 		monthSubfoldersCheckbox,
 		flattenCheckbox,
 		restoreMOVExtensionCheckbox,
+		mergeLivePhotosCheckbox,
 	)
 
 	StartCancelRow := container.NewGridWithColumns(2, startButton, cancelButton)

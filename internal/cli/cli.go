@@ -46,6 +46,7 @@ func Main() {
 	monthSubfolders := flag.Bool("month-subfolders", false, "Create month subfolders (1-12) inside year folders")
 	flatten := flag.Bool("flatten", false, "Put all media files directly in the output folder without year/album subfolders")
 	restoreMOV := flag.Bool("restore-mov", false, "Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\"")
+	mergeLivePhotos := flag.Bool("merge-live-photos", false, "Merge split iPhone Live Photo pairs (HEIC/JPEG + MOV/MP4) back into a single Google Motion Photo")
 
 	flag.Parse()
 
@@ -70,6 +71,10 @@ func Main() {
 		fmt.Println("Error: --symlink and --ignore-albums cannot be used together")
 		os.Exit(1)
 	}
+	if *mergeLivePhotos && *useSymlinks {
+		fmt.Println("Error: --merge-live-photos and --symlink cannot be used together")
+		os.Exit(1)
+	}
 
 	if *inputPath == "" || *outputPath == "" {
 		fmt.Println("Error: --input and --output are required")
@@ -86,6 +91,7 @@ func Main() {
 		IgnoreAlbums:        *ignoreAlbums,
 		MonthSubfolders:     *monthSubfolders,
 		RestoreMOVExtension: *restoreMOV,
+		MergeLivePhotos:     *mergeLivePhotos,
 	}
 
 	go func() {

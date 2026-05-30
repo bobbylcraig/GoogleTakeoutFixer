@@ -20,9 +20,11 @@ This can lead to problems:
 
 ## Solution
 GoogleTakeoutFixer solves these issues by:
-- **Writing EXIF metadata** directly into your media.
+- **Writing metadata** directly into your media. This includes the date taken (with the correct timezone for the photo's location), GPS location, title, description, **people/face tags**, and **favorite status** (written as a 5-star rating).
 - **Organizing your files** into a clear and structured folder structure for easier navigation.
 - **Automatically removing unnecessary JSON files**.
+
+Supported media types: `.jpg`, `.jpeg`, `.png`, `.heic`, `.gif`, `.webp`, `.tiff`, `.bmp`, `.mp4`, `.mov`, `.avi`, `.mkv`, `.m4v`, `.3gp`. Files in other formats are skipped, but the skip is now logged (instead of happening silently) so you can see what was left behind.
 
 ## Preview
 <p align="center">
@@ -68,6 +70,7 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
     - **"Create month subfolders"**: Creates month subfolders (labeled 1-12) inside of the output folders.
     - **"Flatten output structure"**: Puts all files directly in the output folder.
     - **"Restore .MOV file extension"**: Restores .MOV file extension in case the Major Brand EXIF field says "Apple QuickTime (.MOV/QT)" (See #2).
+    - **"Merge Live Photos"**: Rejoins iPhone Live Photos that Takeout split into a separate still (HEIC/JPEG) and video (MOV/MP4) sharing the same name. Each pair is merged back into a single [Google Motion Photo](https://developer.android.com/media/platform/motion-photo-format) so Google Photos plays it as a Live Photo on re-upload. Cannot be combined with symlinked albums (merging rewrites the still in place).
 5. Click **"Start processing"** and wait for the process to finish. The time it takes depends on the number of photos and videos you have.
 
 Once the process is complete, you can find your fixed files in the output folder you selected.
@@ -86,6 +89,7 @@ You can also use GoogleTakeoutFixer through the CLI. Use the following flags:
 - `--month-subfolders`: Create month subfolders (labeled 1-12) inside of folders
 - `--flatten`: Flatten the folder structure and put all files directly in the output folder
 - `--restore-mov`: Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\" (See #2)
+- `--merge-live-photos`: Merge split iPhone Live Photo pairs (HEIC/JPEG + MOV/MP4) back into a single Google Motion Photo so Google Photos plays them as Live Photos. Cannot be combined with `--symlink`.
 - `--version`: Show version
 - `--help`: Show help message
 
@@ -95,6 +99,23 @@ Example usage:
 ``` 
 
 You might have to give the executable permissions to run on Linux and macOS using `chmod +x GoogleTakeoutFixer` before you can run it through the terminal.
+
+## Duplicate Finder
+GoogleTakeoutFixer ships with a separate **Duplicate Finder** tool that scans a folder for duplicate and near-duplicate photos. It catches more than byte-identical copies:
+- The **same photo in different formats** (e.g. a JPG and a PNG of the same image)
+- **Recompressed** copies (a smaller, lower-quality version of the same photo)
+- The **same photo at different resolutions**
+- **Mild edits** such as brightness/colour adjustments (at a higher sensitivity)
+
+How it works:
+1. Choose a folder to scan and a **sensitivity** preset (Identical, Near-duplicate, or Similar / possible edits).
+2. The tool presents each match as a side-by-side pair, with each photo's file size, dimensions, date taken, GPS location, and people tags shown beneath it.
+3. For each pair you can **Delete left**, **Delete right**, **Delete both**, or **Keep both**.
+
+Deletions are never permanent: matched files are **moved to a `GTF-duplicates-trash` folder** inside the scanned directory, and a `restore-manifest.json` records where each file came from so you can put it back. Because perceptual matching can occasionally over-group low-detail images (skies, blank walls), review each pair before deleting.
+
+> [!NOTE]
+> People and location metadata are read using ExifTool. If ExifTool is not installed/bundled, the finder still works but shows only file size and dimensions.
 
 ## Development
 ### Setup
@@ -108,6 +129,14 @@ cd GoogleTakeoutFixer
 
 # cd into the entrypoint directory and run the main.go file
 cd cmd
+go run .
+```
+
+The **Duplicate Finder** is a separate binary with its own entry point. Run it from a development environment with:
+
+```
+# from the repo root
+cd cmd/dedupe
 go run .
 ```
 

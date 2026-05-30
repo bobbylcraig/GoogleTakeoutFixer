@@ -45,6 +45,10 @@ type ProcessOptions struct {
 	IgnoreAlbums        bool
 	Flatten             bool
 	RestoreMOVExtension bool // See issue #2
+	// MergeLivePhotos muxes each iPhone Live Photo pair (same-named still +
+	// video) into a single Google Motion Photo file instead of writing the two
+	// halves side by side. The video is embedded as a trailer in the still.
+	MergeLivePhotos bool
 }
 
 type FixerContext struct {
@@ -169,6 +173,13 @@ func Process(
 	return nil
 }
 
+// mediaJob is one unit of work dispatched to a worker. videoPartner is set only
+// for Live Photo pairs, in which case imagePath is the still half.
+type mediaJob struct {
+	imagePath    string
+	videoPartner string
+}
+
 // Process a directory and fix all files within the directory. Ignores sub-directories.
 func ProcessDirectory(
 	fixerCtx *FixerContext,
@@ -186,12 +197,25 @@ func ProcessDirectory(
 	// TODO: Fix potential race conditions
 	// Job pools
 	// Buffered channel to avoid blocking
-	jobs := make(chan string, len(files))
+	jobs := make(chan mediaJob, len(files))
 	completed := make(chan string)
 	// Channel to capture errors
 	errors := make(chan error)
 
 	sourceDirName := filepath.Base(dirPath)
+
+	// Detect iPhone Live Photo pairs (same-named still + video) so each pair is
+	// processed by a single worker and kept name-aligned. Symlinked album
+	// entries take a different output path and are not paired here.
+	var pairs map[string]string
+	var pairedVideos map[string]bool
+	if !fixerCtx.Options.UseSymlinks {
+		pairs = DetectLivePhotoPairs(dirPath, files)
+		pairedVideos = make(map[string]bool, len(pairs))
+		for _, v := range pairs {
+			pairedVideos[v] = true
+		}
+	}
 
 	var wg sync.WaitGroup
 	workerCount := runtime.NumCPU() * 2 // x2 is faster for IO tasks, x more than that has no effect based on testing
@@ -199,16 +223,26 @@ func ProcessDirectory(
 	// Start worker goroutines
 	for i := 0; i < workerCount; i++ {
 		go func() {
-			for imagePath := range jobs {
+			for job := range jobs {
 				if fixerCtx.Ctx.Err() != nil {
 					wg.Done()
 					continue
 				}
-				err := ProcessFile(fixerCtx, imagePath, sourceDirName, isYearFolder)
-				if err != nil {
-					errors <- fmt.Errorf("error processing file %s: %w", imagePath, err)
+				var err error
+				if job.videoPartner != "" {
+					err = ProcessLivePhotoPair(fixerCtx, job.imagePath, job.videoPartner, sourceDirName, isYearFolder)
 				} else {
-					completed <- imagePath
+					err = ProcessFile(fixerCtx, job.imagePath, sourceDirName, isYearFolder)
+				}
+				if err != nil {
+					errors <- fmt.Errorf("error processing file %s: %w", job.imagePath, err)
+				} else {
+					completed <- job.imagePath
+					// A pair processes two source files in one job; report the
+					// video half too so progress totals match the file count.
+					if job.videoPartner != "" {
+						completed <- job.videoPartner
+					}
 				}
 				wg.Done()
 			}
@@ -226,13 +260,24 @@ func ProcessDirectory(
 
 		imagePath := filepath.Join(dirPath, file.Name())
 
-		// Check whether a file is a media file
+		// Check whether a file is a media file. Sidecar JSON and known Google
+		// Takeout extras are skipped silently; anything else is logged so
+		// unsupported media is not dropped without a trace (issue #26).
 		if !IsMediaFile(imagePath) {
+			if !IsNameExtension(".json", imagePath) {
+				Log(LoggerWarn, "Skipping unsupported file (not a recognized media type): %s", imagePath)
+			}
+			continue
+		}
+
+		// The video half of a Live Photo pair is handled alongside its image,
+		// so do not dispatch it as a standalone job.
+		if pairedVideos[imagePath] {
 			continue
 		}
 
 		wg.Add(1)
-		jobs <- imagePath
+		jobs <- mediaJob{imagePath: imagePath, videoPartner: pairs[imagePath]}
 	}
 
 	// All jobs have been sent
@@ -322,30 +367,247 @@ func ProcessFile(
 		return err
 	}
 
-	destPath := filepath.Join(outputDir, fileName)
+	wantedPath := filepath.Join(outputDir, fileName)
 
-	if _, err := os.Stat(destPath); err == nil {
-		Log(LoggerInfo, "File %s already exists, skipping", destPath)
+	// Resolve collisions: an identical file is skipped, a different file with
+	// the same name is written alongside under a " (n)" suffix so nothing is
+	// silently dropped (issue #6). Resolution and reservation are serialized
+	// so concurrent workers cannot claim the same path.
+	destPath, skip, reserved, err := reserveDestPath(fixerCtx, sourcePath, wantedPath)
+	if err != nil {
+		Log(LoggerError, "Error resolving destination for %s: %v", sourcePath, err)
+		return err
+	}
+	if skip {
+		Log(LoggerInfo, "Identical file already exists at %s, skipping %s", destPath, sourcePath)
 		return nil
+	}
+	if destPath != wantedPath {
+		Log(LoggerInfo, "Name collision for %s, writing to %s", fileName, destPath)
 	}
 
 	// Metadata sidecar file not found, copy the file without metadata
+	metadataPath := sidecarPath
 	if sidecarPath == "" {
 		Log(LoggerWarn, "No sidecar file found for %s — copying without metadata", sourcePath)
-		if err := CreateFixedFile(fixerCtx, sourcePath, "", destPath, isYearFolder); err != nil {
-			Log(LoggerError, "Error creating file without sidecar for %s: %v", sourcePath, err)
-			return err
-		}
-		return nil
 	}
 
-	err = CreateFixedFile(fixerCtx, sourcePath, sidecarPath, destPath, isYearFolder)
-	if err != nil {
+	if err := CreateFixedFile(fixerCtx, sourcePath, metadataPath, destPath, isYearFolder); err != nil {
+		// A reserved placeholder must not be left behind on failure, or a
+		// re-run would treat the empty file as a real collision.
+		if reserved {
+			os.Remove(destPath)
+		}
 		Log(LoggerError, "Error creating fixed file for %s: %v", sourcePath, err)
 		return err
 	}
 
 	return nil
+}
+
+// ProcessLivePhotoPair fixes an iPhone Live Photo's still + motion halves
+// together. Both are written into the same output directory under a single
+// shared " (n)" collision suffix so their base names stay matched (which is how
+// Google Photos re-pairs them on upload). When MergeLivePhotos is set, the two
+// halves are then muxed into a single Google Motion Photo.
+func ProcessLivePhotoPair(
+	fixerCtx *FixerContext,
+	imagePath string,
+	videoPath string,
+	sourceDirName string,
+	isYearFolder bool,
+) error {
+	imageName := filepath.Base(imagePath)
+	videoName := filepath.Base(videoPath)
+
+	// See issue #2 — restore the QuickTime extension on the video half.
+	if fixerCtx.Options.RestoreMOVExtension && strings.EqualFold(filepath.Ext(videoName), ".mp4") {
+		if majorBrand, err := GetMajorBrand(videoPath); err == nil && strings.HasPrefix(majorBrand, "Apple QuickTime") {
+			ext := filepath.Ext(videoName)
+			newName := videoName[:len(videoName)-len(ext)] + ".mov"
+			if ext == ".MP4" {
+				newName = videoName[:len(videoName)-len(ext)] + ".MOV"
+			}
+			videoName = newName
+		}
+	}
+
+	// The still half owns the sidecar; the video borrows it when it lacks one.
+	imageSidecar, err := FindSidecar(imagePath)
+	if err != nil {
+		Log(LoggerError, "Error finding sidecar for %s: %v", imagePath, err)
+		return err
+	}
+	videoSidecar, err := FindSidecar(videoPath)
+	if err != nil {
+		Log(LoggerError, "Error finding sidecar for %s: %v", videoPath, err)
+		return err
+	}
+	if videoSidecar == "" {
+		videoSidecar = imageSidecar
+	}
+
+	// Both halves share an output directory; resolve it from the still so album
+	// vs. year placement is consistent across the pair.
+	outputDir, err := ResolveOutputDir(fixerCtx, imagePath, imageSidecar, sourceDirName, isYearFolder)
+	if err != nil {
+		return err
+	}
+	imageWanted := filepath.Join(outputDir, imageName)
+	videoWanted := filepath.Join(outputDir, videoName)
+
+	imageDest, videoDest, skipImage, skipVideo, reservedImage, reservedVideo, err :=
+		reservePairDestPaths(fixerCtx, imagePath, videoPath, imageWanted, videoWanted)
+	if err != nil {
+		Log(LoggerError, "Error resolving destinations for Live Photo pair %s: %v", imageName, err)
+		return err
+	}
+	if imageDest != imageWanted {
+		Log(LoggerInfo, "Name collision for Live Photo %s, writing pair to %s + %s",
+			imageName, filepath.Base(imageDest), filepath.Base(videoDest))
+	}
+
+	// Write each half unless an identical copy already exists.
+	if !skipImage {
+		if err := CreateFixedFile(fixerCtx, imagePath, imageSidecar, imageDest, isYearFolder); err != nil {
+			if reservedImage {
+				os.Remove(imageDest)
+			}
+			if reservedVideo {
+				os.Remove(videoDest)
+			}
+			Log(LoggerError, "Error creating fixed file for %s: %v", imagePath, err)
+			return err
+		}
+	} else {
+		Log(LoggerInfo, "Identical file already exists at %s, skipping %s", imageDest, imagePath)
+	}
+	if !skipVideo {
+		if err := CreateFixedFile(fixerCtx, videoPath, videoSidecar, videoDest, isYearFolder); err != nil {
+			if reservedVideo {
+				os.Remove(videoDest)
+			}
+			Log(LoggerError, "Error creating fixed file for %s: %v", videoPath, err)
+			return err
+		}
+	} else {
+		Log(LoggerInfo, "Identical file already exists at %s, skipping %s", videoDest, videoPath)
+	}
+
+	// Optionally merge the pair into a single Google Motion Photo: embed the
+	// video as a trailer in the still and remove the standalone video copy.
+	// Requires both halves to have just been written and a muxable still.
+	if fixerCtx.Options.MergeLivePhotos && !skipImage && !skipVideo {
+		if !IsMotionPhotoStill(imageDest) {
+			Log(LoggerInfo, "Live Photo still %s is not a muxable format; leaving pair as separate files", imageName)
+		} else if err := MuxMotionPhoto(imageDest, videoDest); err != nil {
+			// Leave both files in place on failure — they are still correct,
+			// just not merged.
+			Log(LoggerWarn, "Could not merge Live Photo %s into a Motion Photo: %v", imageName, err)
+		} else if err := os.Remove(videoDest); err != nil {
+			Log(LoggerWarn, "Merged Motion Photo %s but could not remove standalone video %s: %v",
+				filepath.Base(imageDest), filepath.Base(videoDest), err)
+		} else {
+			Log(LoggerInfo, "Merged Live Photo %s into a Motion Photo", filepath.Base(imageDest))
+		}
+	}
+
+	return nil
+}
+
+// reservePairDestPaths resolves and reserves output paths for a Live Photo pair
+// under one shared suffix, serialized so concurrent workers cannot claim the
+// same names. It mirrors reserveDestPath but reserves both halves together.
+func reservePairDestPaths(fixerCtx *FixerContext, imageSrc, videoSrc, imageWanted, videoWanted string) (
+	imageDest, videoDest string, skipImage, skipVideo, reservedImage, reservedVideo bool, err error,
+) {
+	destReserveMutex.Lock()
+	defer destReserveMutex.Unlock()
+
+	for {
+		imageDest, videoDest, skipImage, skipVideo, err = ResolvePairDestPaths(imageSrc, videoSrc, imageWanted, videoWanted)
+		if err != nil {
+			return "", "", false, false, false, false, err
+		}
+
+		if err := os.MkdirAll(filepath.Dir(imageDest), 0755); err != nil {
+			return "", "", false, false, false, false, err
+		}
+
+		// Reserve each non-skipped half with an O_EXCL placeholder. If either
+		// loses a race, release any placeholder taken and re-resolve.
+		reservedImage, reservedVideo = false, false
+		if !skipImage {
+			f, oerr := os.OpenFile(imageDest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+			if oerr != nil {
+				if os.IsExist(oerr) {
+					continue
+				}
+				return "", "", false, false, false, false, oerr
+			}
+			f.Close()
+			reservedImage = true
+		}
+		if !skipVideo {
+			f, oerr := os.OpenFile(videoDest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+			if oerr != nil {
+				if reservedImage {
+					os.Remove(imageDest)
+				}
+				if os.IsExist(oerr) {
+					continue
+				}
+				return "", "", false, false, false, false, oerr
+			}
+			f.Close()
+			reservedVideo = true
+		}
+		return imageDest, videoDest, skipImage, skipVideo, reservedImage, reservedVideo, nil
+	}
+}
+
+// destReserveMutex serializes destination-path resolution so that two workers
+// processing same-named source files cannot both claim the same output path.
+var destReserveMutex sync.Mutex
+
+// reserveDestPath resolves where sourcePath should be written and, when a new
+// path is needed, reserves it by creating an empty placeholder file under lock.
+// The subsequent copy overwrites the placeholder. reserved reports whether a
+// placeholder file was created (so the caller can clean it up on failure).
+// skip=true means an identical file already exists and nothing should be written.
+func reserveDestPath(fixerCtx *FixerContext, sourcePath, wantedPath string) (destPath string, skip bool, reserved bool, err error) {
+	destReserveMutex.Lock()
+	defer destReserveMutex.Unlock()
+
+	for {
+		destPath, skip, err = ResolveDestPath(sourcePath, wantedPath)
+		if err != nil || skip {
+			return destPath, skip, false, err
+		}
+
+		// Symlinked album entries are reserved by the symlink itself, so only
+		// placeholder-reserve when a real copy will happen.
+		if fixerCtx.Options.UseSymlinks {
+			return destPath, false, false, nil
+		}
+
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return "", false, false, err
+		}
+
+		f, oerr := os.OpenFile(destPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if oerr != nil {
+			// Another file claimed this exact name since we resolved it; resolve
+			// again now that it is taken and try to reserve the next slot.
+			if os.IsExist(oerr) {
+				continue
+			}
+			return "", false, false, oerr
+		}
+		f.Close()
+
+		return destPath, false, true, nil
+	}
 }
 
 func CreateFixedFile(

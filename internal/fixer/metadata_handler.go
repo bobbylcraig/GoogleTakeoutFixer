@@ -50,6 +50,10 @@ type imageMetadata struct {
 		Longitude float64 `json:"longitude"`
 		Altitude  float64 `json:"altitude"`
 	} `json:"geoData"`
+	People []struct {
+		Name string `json:"name"`
+	} `json:"people"`
+	Favorited bool `json:"favorited"`
 }
 
 // Reads JSON and returns some of its metadata contents using the imageMetadata struct
@@ -130,11 +134,14 @@ func CloseExifTool() {
 	}
 }
 
-// Apply all available metadata to a file
-func ApplyMetadata(filePath string, meta imageMetadata) error {
+// buildExifArgs translates JSON sidecar metadata into the ordered list of
+// exiftool tag-assignment arguments (without the target file path). It is pure
+// so the mapping can be unit-tested without invoking exiftool. The returned
+// utcTime is the photo-taken time used to also set the filesystem mtime.
+func buildExifArgs(meta imageMetadata) ([]string, time.Time, error) {
 	timestampInt, err := strconv.ParseInt(meta.PhotoTakenTime.Timestamp, 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid timestamp: %v", err)
+		return nil, time.Time{}, fmt.Errorf("invalid timestamp: %v", err)
 	}
 
 	utcTime := time.Unix(timestampInt, 0).UTC()
@@ -171,6 +178,28 @@ func ApplyMetadata(filePath string, meta imageMetadata) error {
 		args = append(args, "-ImageDescription="+meta.Description, "-Caption-Abstract="+meta.Description)
 	}
 
+	// People (face/person tags). Written to XMP PersonInImage (the field
+	// Google Photos and Lightroom read back) and to Keywords/Subject so the
+	// names are also searchable in generic photo managers.
+	for _, person := range meta.People {
+		name := strings.TrimSpace(person.Name)
+		if name == "" {
+			continue
+		}
+		args = append(args,
+			"-XMP:PersonInImage+="+name,
+			"-XMP-dc:Subject+="+name,
+			"-IPTC:Keywords+="+name,
+		)
+	}
+
+	// Favorite/starred status -> XMP Rating. Google marks favorites; mapping to
+	// a 5-star rating is the common convention so favorites survive re-import
+	// into photo managers.
+	if meta.Favorited {
+		args = append(args, "-XMP:Rating=5")
+	}
+
 	// If geodata exists, add it to args
 	// EXIF uses N E S W for geodata
 	if meta.GeoData.Latitude != 0 && meta.GeoData.Longitude != 0 {
@@ -191,6 +220,16 @@ func ApplyMetadata(filePath string, meta imageMetadata) error {
 			fmt.Sprintf("-GPSLongitudeRef=%s", lonRef),
 			fmt.Sprintf("-GPSAltitude=%f", meta.GeoData.Altitude),
 		)
+	}
+
+	return args, utcTime, nil
+}
+
+// Apply all available metadata to a file
+func ApplyMetadata(filePath string, meta imageMetadata) error {
+	args, utcTime, err := buildExifArgs(meta)
+	if err != nil {
+		return err
 	}
 
 	args = append(args, filePath)
@@ -233,6 +272,40 @@ func ApplyMetadata(filePath string, meta imageMetadata) error {
 	}
 
 	return nil
+}
+
+// runExifAssign sends a batch of tag-assignment args plus a target file to the
+// persistent exiftool process and drains its response. args must NOT include
+// the trailing file path or -execute; this helper appends them. The caller
+// holds no lock — this acquires exifToolMutex itself.
+func runExifAssign(args []string, filePath string) error {
+	exifToolMutex.Lock()
+	defer exifToolMutex.Unlock()
+
+	if exifToolCmd == nil {
+		return fmt.Errorf("Exiftool is not initialized")
+	}
+
+	full := append(append([]string{}, args...), filePath)
+	command := strings.Join(full, "\n") + "\n-execute\n"
+	if _, err := exifToolStdin.Write([]byte(command)); err != nil {
+		return fmt.Errorf("Failed to write to exiftool: %v", err)
+	}
+
+	var exifErr error
+	for exifToolScanner.Scan() {
+		line := exifToolScanner.Text()
+		if line == "{ready}" {
+			break
+		}
+		if strings.Contains(line, "Error") && exifErr == nil {
+			exifErr = fmt.Errorf("Exiftool error: %s", line)
+		}
+	}
+	if exifErr != nil {
+		return exifErr
+	}
+	return exifToolScanner.Err()
 }
 
 // GetMajorBrand reads the MajorBrand tag from a file using the persistent exiftool instance
